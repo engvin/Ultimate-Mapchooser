@@ -47,12 +47,12 @@ new Handle:cvar_nominate_time   = INVALID_HANDLE;
 ////----/CONVARS-----/////
 
 //Mapcycle
-new Handle:map_kv = INVALID_HANDLE;
+KeyValues map_kv = null;
 new Handle:umc_mapcycle = INVALID_HANDLE;
 
 //Memory queues. Used to store the previously played maps.
-new Handle:vote_mem_arr    = INVALID_HANDLE;
-new Handle:vote_catmem_arr = INVALID_HANDLE;
+Handle vote_mem_arr    = INVALID_HANDLE;
+Handle vote_catmem_arr = INVALID_HANDLE;
 
 new Handle:nom_menu_groups[MAXPLAYERS+1]    = { INVALID_HANDLE, ... };
 new Handle:nom_menu_nomgroups[MAXPLAYERS+1] = { INVALID_HANDLE, ... };
@@ -327,26 +327,31 @@ Handle:GetMapcycle()
 //Reloads the mapcycle. Returns true on success, false on failure.
 bool:ReloadMapcycle()
 {
-	if (umc_mapcycle != INVALID_HANDLE)
-	{
-		CloseHandle(umc_mapcycle);
-		umc_mapcycle = INVALID_HANDLE;
-	}
-	if (map_kv != INVALID_HANDLE)
-	{
-		CloseHandle(map_kv);
-		map_kv = INVALID_HANDLE;
-	}
-	umc_mapcycle = GetMapcycle();
-
-	return umc_mapcycle != INVALID_HANDLE;
+    if (umc_mapcycle != INVALID_HANDLE)
+    {
+        CloseHandle(umc_mapcycle);
+        umc_mapcycle = INVALID_HANDLE;
+    }
+    if (map_kv != INVALID_HANDLE)
+    {
+        CloseHandle(map_kv);
+        map_kv = null;
+    }
+    umc_mapcycle = GetMapcycle();
+    
+    return umc_mapcycle != INVALID_HANDLE;
 }
 
 RemovePreviousMapsFromCycle()
 {
-	map_kv = CreateKeyValues("umc_rotation");
-	KvCopySubkeys(umc_mapcycle, map_kv);
-	FilterMapcycleFromArrays(map_kv, vote_mem_arr, vote_catmem_arr, GetConVarInt(cvar_mem_group));
+    map_kv = CreateKeyValues("umc_rotation");
+    KvCopySubkeys(umc_mapcycle, map_kv);
+    FilterMapcycleFromArrays(
+        view_as<KeyValues>(map_kv),
+        view_as<ArrayList>(vote_mem_arr),
+        view_as<ArrayList>(vote_catmem_arr), 
+        GetConVarInt(cvar_mem_group)
+    );
 }
 
 //************************************************************************************************//
@@ -437,152 +442,148 @@ public Action:Command_Nominate(client, args)
 //                                           NOMINATIONS                                          //
 //************************************************************************************************//
 
-//Displays a nomination menu to the given client.
-bool:DisplayNominationMenu(client)
+// Displays a nomination menu to the given client.
+bool DisplayNominationMenu(int client)
 {
-	if (!can_nominate)
-	{
-		return false;
-	}
+    if (!can_nominate)
+        return false;   
+    
+    LogUMCMessage("%N wants to nominate a map.", client);
 
-	LogUMCMessage("%N wants to nominate a map.", client);
+    // Build the menu
+    Handle menu = GetConVarBool(cvar_nominate_tiered) ? BuildTieredNominationMenu() : BuildNominationMenu(client);
+    
+    //Display the menu if the menu was built successfully.
+    if (menu != INVALID_HANDLE)
+        return DisplayMenu(menu, client, GetConVarInt(cvar_nominate_time));
 
-	//Build the menu
-	new Handle:menu = GetConVarBool(cvar_nominate_tiered) ? BuildTieredNominationMenu(client) : BuildNominationMenu(client);
-
-	//Display the menu if the menu was built successfully.
-	if (menu != INVALID_HANDLE)
-	{
-		return DisplayMenu(menu, client, GetConVarInt(cvar_nominate_time));
-	}
-
-	return false;
+    return false;
 }
 
-//Creates and returns the Nomination menu for the given client.
-Handle:BuildNominationMenu(client, const String:cat[]=INVALID_GROUP)
+// Creates and returns the Nomination menu for the given client.
+Handle BuildNominationMenu(int client, const char[] cat = INVALID_GROUP)
 {
-	//Initialize the menu
-	new Handle:menu = CreateMenu(Handle_NominationMenu, MenuAction_Display);
+    // Initialize the menu
+    Menu menu = new Menu(Handle_NominationMenu, MenuAction_Display);
+    menu.SetTitle("%T", "Nomination Menu Title", LANG_SERVER);
+    
+    if (!StrEqual(cat, INVALID_GROUP))
+        SetMenuExitBackButton(menu, true); // Make it so we can return to the previous menu.
+    
+    KvRewind(map_kv);
+    
+    // Copy over for template processing
+    KeyValues dispKV = new KeyValues("umc_mapcycle");
+    KvCopySubkeys(map_kv, dispKV);
 
-	//Set the title.
-	SetMenuTitle(menu, "%T", "Nomination Menu Title", LANG_SERVER);
+    // Get map array.
+    ArrayList mapArray = view_as<ArrayList>(UMC_CreateValidMapArray(map_kv, umc_mapcycle, cat, true, false));
 
-	if (!StrEqual(cat, INVALID_GROUP))
-	{
-		//Make it so we can return to the previous menu.
-		SetMenuExitBackButton(menu, true);
-	}
+    if (GetConVarBool(cvar_sort))
+        SortMapTrieArray(mapArray);
+    
+    if (mapArray.Length == 0)
+    {
+        LogError("No maps available to be nominated.");
+        CloseHandle(menu);
+        CloseHandle(mapArray);
+        CloseHandle(dispKV);
+        return INVALID_HANDLE;
+    }
+    
+    //Variables
+    // very helpful comment, thanks whoever wrote this previous line, I was
+    // already thinking these would be chicken nuggets!
+    int numCells = ByteCountToCells(MAP_LENGTH);
 
-	KvRewind(map_kv);
+    nom_menu_groups[client] = new ArrayList(numCells);
+    nom_menu_nomgroups[client] = new ArrayList(numCells);
 
-	//Copy over for template processing
-	new Handle:dispKV = CreateKeyValues("umc_mapcycle");
-	KvCopySubkeys(map_kv, dispKV);
+    char mapBuff[MAP_LENGTH], groupBuff[MAP_LENGTH], group[MAP_LENGTH], display[MAP_LENGTH];
+    char dAdminFlags[64], gAdminFlags[64], mAdminFlags[64];
+    UMCMenuItemStyle style;
 
-	//Get map array.
-	new Handle:mapArray = UMC_CreateValidMapArray(map_kv, umc_mapcycle, cat, true, false);
+    UMCMenuList menuList = new UMCMenuList();
+    StringMap mapTrie = new StringMap();
 
-	if (GetConVarBool(cvar_sort))
-	{
-		SortMapTrieArray(mapArray);
-	}
+    GetConVarString(cvar_flags, dAdminFlags, sizeof(dAdminFlags));
+    int clientFlags = GetUserFlagBits(client);
+    
+    for (int i = 0; i < mapArray.Length; i++)
+    {
+        style = Style_Normal;
+        mapTrie = GetArrayCell(mapArray, i);
+        GetTrieString(mapTrie, MAP_TRIE_MAP_KEY, mapBuff, sizeof(mapBuff));
+        GetTrieString(mapTrie, MAP_TRIE_GROUP_KEY, groupBuff, sizeof(groupBuff));
+        
+        KvJumpToKey(map_kv, groupBuff);
+        
+        KvGetString(map_kv, "nominate_group", group, sizeof(group), INVALID_GROUP);
+        
+        if (StrEqual(group, INVALID_GROUP))
+            strcopy(group, sizeof(group), groupBuff);
+        
+        KvGetString(map_kv, NOMINATE_ADMINFLAG_KEY, gAdminFlags, sizeof(gAdminFlags), dAdminFlags);
+        
+        KvJumpToKey(map_kv, mapBuff);
+        
+        KvGetString(map_kv, NOMINATE_ADMINFLAG_KEY, mAdminFlags, sizeof(mAdminFlags), gAdminFlags);
+        
+        // Check if admin flag is set and if player has admin flag
+        if (mAdminFlags[0] != '\0' && !(clientFlags & ReadFlagString(mAdminFlags)))
+            continue;
 
-	new size = GetArraySize(mapArray);
-	if (size == 0)
-	{
-		LogError("No maps available to be nominated.");
-		CloseHandle(menu);
-		CloseHandle(mapArray);
-		CloseHandle(dispKV);
-		return INVALID_HANDLE;
-	}
+        // Get the display string.
+        UMC_FormatDisplayString(display, sizeof(display), dispKV, mapBuff, groupBuff);
+        
+        // we want to also have nominated maps in the menu, but disabled.
+        // otherwise people cry because they think we removed badwater
+        if (UMC_IsMapNominated(mapBuff, group)) {
+            FormatEx(display, sizeof(display), "%s (Nominated)", display);
+            style = Style_Disabled;
+        }
 
-	//Variables
-	new numCells = ByteCountToCells(MAP_LENGTH);
-	nom_menu_groups[client] = CreateArray(numCells);
-	nom_menu_nomgroups[client] = CreateArray(numCells);
-	new Handle:menuItems = CreateArray(numCells);
-	new Handle:menuItemDisplay = CreateArray(numCells);
-	decl String:display[MAP_LENGTH];
-	new Handle:mapTrie = INVALID_HANDLE;
-	decl String:mapBuff[MAP_LENGTH], String:groupBuff[MAP_LENGTH];
-	decl String:group[MAP_LENGTH];
+        // TODO: what do these get used for?
+        PushArrayString(nom_menu_groups[client], groupBuff);
+        PushArrayString(nom_menu_nomgroups[client], group);
 
-	decl String:dAdminFlags[64], String:gAdminFlags[64], String:mAdminFlags[64];
-	GetConVarString(cvar_flags, dAdminFlags, sizeof(dAdminFlags));
-	new clientFlags = GetUserFlagBits(client);
+        // Add map data to the arrays.
+        menuList.AddItemList(mapBuff, display, style);
 
-	for (new i = 0; i < size; i++)
-	{
-		mapTrie = GetArrayCell(mapArray, i);
-		GetTrieString(mapTrie, MAP_TRIE_MAP_KEY, mapBuff, sizeof(mapBuff));
-		GetTrieString(mapTrie, MAP_TRIE_GROUP_KEY, groupBuff, sizeof(groupBuff));
+        KvRewind(map_kv);
+    }
 
-		KvJumpToKey(map_kv, groupBuff);
+    /* We also want to see the recently played maps so that people don't think
+    // we stole their belowed upward.
+    ArrayList recentlyPlayedMaps = view_as<ArrayList>(vote_mem_arr);
+    for (int i = 0; i < recentlyPlayedMaps.Length; i++)
+    {
+        // TODO: Use actual map display string
+        GetArrayString(recentlyPlayedMaps, i, mapBuff, sizeof(mapBuff));
+        if (i == 0) {
+            FormatEx(display, sizeof(display), "%s (Current Map)", mapBuff);
+        } else {
+            FormatEx(display, sizeof(display), "%s (Recently Played)", mapBuff);
+        }
 
-		KvGetString(map_kv, "nominate_group", group, sizeof(group), INVALID_GROUP);
+        PushArrayString(nom_menu_groups[client], groupBuff);
+        PushArrayString(nom_menu_nomgroups[client], group);
 
-		if (StrEqual(group, INVALID_GROUP))
-		{
-			strcopy(group, sizeof(group), groupBuff);
-		}
-
-		if (UMC_IsMapNominated(mapBuff, group))
-		{
-			KvGoBack(map_kv);
-			continue;
-		}
-
-		KvGetString(map_kv, NOMINATE_ADMINFLAG_KEY, gAdminFlags, sizeof(gAdminFlags), dAdminFlags);
-
-		KvJumpToKey(map_kv, mapBuff);
-
-		KvGetString(map_kv, NOMINATE_ADMINFLAG_KEY, mAdminFlags, sizeof(mAdminFlags), gAdminFlags);
-
-		//Check if admin flag set
-		if (mAdminFlags[0] != '\0')
-		{
-			//Check if player has admin flag
-			if (!(clientFlags & ReadFlagString(mAdminFlags)))
-			{
-				continue;
-			}
-		}
-
-		//Get the name of the current map.
-		KvGetSectionName(map_kv, mapBuff, sizeof(mapBuff));
-
-		//Get the display string.
-		UMC_FormatDisplayString(display, sizeof(display), dispKV, mapBuff, groupBuff);
-
-		//Add map data to the arrays.
-		PushArrayString(menuItems, mapBuff);
-		PushArrayString(menuItemDisplay, display);
-		PushArrayString(nom_menu_groups[client], groupBuff);
-		PushArrayString(nom_menu_nomgroups[client], group);
-
-		KvRewind(map_kv);
-	}
-
-	//Add all maps from the nominations array to the menu.
-	AddArrayToMenu(menu, menuItems, menuItemDisplay);
-
-	//No longer need the arrays.
-	CloseHandle(menuItems);
-	CloseHandle(menuItemDisplay);
-	ClearHandleArray(mapArray);
-	CloseHandle(mapArray);
-
-	//Or the display KV
-	CloseHandle(dispKV);
-
-	//Success!
-	return menu;
+        menuList.AddItemList(mapBuff, display, Style_Disabled);
+    }*/
+    
+    AddMenuListToMenu(menu, menuList);
+    
+    delete menuList;
+    ClearHandleArray(mapArray);
+    CloseHandle(mapArray);
+    CloseHandle(dispKV);
+    
+    return menu;
 }
 
 //Creates the first part of a tiered Nomination menu.
-Handle:BuildTieredNominationMenu(client)
+Handle:BuildTieredNominationMenu()
 {
 	//Initialize the menu
 	new Handle:menu = CreateMenu(Handle_TieredNominationMenu, MenuAction_Display);
@@ -606,7 +607,7 @@ Handle:BuildTieredNominationMenu(client)
 	//Variables
 	decl String:dAdminFlags[64], String:gAdminFlags[64], String:mAdminFlags[64];
 	GetConVarString(cvar_flags, dAdminFlags, sizeof(dAdminFlags));
-	new clientFlags = GetUserFlagBits(client);
+	// new clientFlags = GetUserFlagBits(client);
 
 	new Handle:menuItems = CreateArray(ByteCountToCells(MAP_LENGTH));
 	decl String:groupName[MAP_LENGTH], String:mapName[MAP_LENGTH];
@@ -624,14 +625,14 @@ Handle:BuildTieredNominationMenu(client)
 		{
 			KvGetSectionName(map_kv, mapName, sizeof(mapName));
 
-			if (UMC_IsMapNominated(mapName, groupName))
+			/*if (UMC_IsMapNominated(mapName, groupName))
 			{
 				continue;
-			}
+			}*/
 
 			KvGetString(map_kv, NOMINATE_ADMINFLAG_KEY, mAdminFlags, sizeof(mAdminFlags), gAdminFlags);
 
-			//Check if admin flag set
+			/*//Check if admin flag set
 			if (mAdminFlags[0] != '\0')
 			{
 				//Check if player has admin flag
@@ -639,7 +640,7 @@ Handle:BuildTieredNominationMenu(client)
 				{
 					continue;
 				}
-			}
+			}*/
 
 			excluded = false;
 			break;
@@ -708,7 +709,7 @@ public Handle_NominationMenu(Handle:menu, MenuAction:action, client, param2)
 			if (param2 == MenuCancel_ExitBack)
 			{
 				//Build the menu
-				new Handle:newmenu = BuildTieredNominationMenu(client);
+				new Handle:newmenu = BuildTieredNominationMenu();
 
 				//Display the menu if the menu was built successfully.
 				if (newmenu != INVALID_HANDLE)
