@@ -2010,35 +2010,6 @@ UMC_BuildOptionsError:BuildMapVoteItems(Handle:voteManager, Handle:result, Handl
 	new Handle:nomKV;
 	decl String:nomGroup[MAP_LENGTH];
 
-	new totalNoms = 0;	//Total nominations amount
-
-	//Get total amount of nominations
-	do
-	{
-		//Store the name of the current category.
-		KvGetSectionName(kv, catName, sizeof(catName));
-
-		//Get all nominations for the current category.
-		if (exclude)
-		{
-			tempCatNoms = GetCatNominations(catName);
-			nominationsFromCat = FilterNominationsArray(tempCatNoms);
-			CloseHandle(tempCatNoms);
-		}
-		else
-		{
-			nominationsFromCat = GetCatNominations(catName);
-		}
-
-		//Get the amount of nominations for the current category.
-		numNoms = GetArraySize(nominationsFromCat);
-
-		totalNoms += numNoms;
-
-	}
-	while (KvGotoNextKey(kv)); //Do this for each category.
-
-
 	//Add maps to vote array from current category.
 	do
 	{
@@ -2080,7 +2051,6 @@ UMC_BuildOptionsError:BuildMapVoteItems(Handle:voteManager, Handle:result, Handl
 
 		//Calculate the number of maps we still need to fetch from the mapcycle.
 		numMapsFromCat = inVote - numNoms;
-		numMapsFromCat -= totalNoms;
 
 		// Populate vote with nomination maps from this category if we do not need to fetch any maps from the mapcycle
 		// AND the number of nominated maps in the vote is limited to the maps_invote setting for the category.
