@@ -1962,6 +1962,8 @@ UMC_BuildOptionsError:BuildMapVoteItems(Handle:voteManager, Handle:result, Handl
 	KvRewind(okv); //rewind original
 	new Handle:kv = CreateKeyValues("umc_rotation"); //new handle
 	KvCopySubkeys(okv, kv); //copy everything to the new handle
+	new Handle:gkv = CreateKeyValues("umc_rotation"); //new handle
+	KvCopySubkeys(okv, gkv); //copy everything to the new handle
 
 	//Filter mapcycle
 	if (exclude)
@@ -2010,6 +2012,40 @@ UMC_BuildOptionsError:BuildMapVoteItems(Handle:voteManager, Handle:result, Handl
 	new Handle:nomKV;
 	decl String:nomGroup[MAP_LENGTH];
 
+
+	new totalNoms = 0;	//Total nominations amount
+
+	KvGotoFirstSubKey(gkv);
+	//Get total amount of nominations
+	do
+	{
+		//Store the name of the current category.
+		KvGetSectionName(gkv, catName, sizeof(catName));
+
+		//Get all nominations for the current category.
+		if (exclude)
+		{
+			tempCatNoms = GetCatNominations(catName);
+			nominationsFromCat = FilterNominationsArray(tempCatNoms);
+			CloseHandle(tempCatNoms);
+		}
+		else
+		{
+			nominationsFromCat = GetCatNominations(catName);
+		}
+
+		//Get the amount of nominations for the current category.
+		numNoms = GetArraySize(nominationsFromCat);
+
+		totalNoms += numNoms;
+		PrintToServer("[Large Debug] For category %s, numNoms = %i", catName, numNoms);
+		PrintToServer("[Large Debug] At category %s, totalNoms = %i", catName, totalNoms);
+
+	}
+	while (KvGotoNextKey(gkv)); //Do this for each category.
+
+	CloseHandle(gkv);
+
 	//Add maps to vote array from current category.
 	do
 	{
@@ -2050,7 +2086,8 @@ UMC_BuildOptionsError:BuildMapVoteItems(Handle:voteManager, Handle:result, Handl
 		}
 
 		//Calculate the number of maps we still need to fetch from the mapcycle.
-		numMapsFromCat = inVote - numNoms;
+		//numMapsFromCat = inVote - numNoms;
+		numMapsFromCat = inVote - totalNoms;
 
 		// Populate vote with nomination maps from this category if we do not need to fetch any maps from the mapcycle
 		// AND the number of nominated maps in the vote is limited to the maps_invote setting for the category.
