@@ -44,11 +44,13 @@ new Handle:cvar_mem_group       = INVALID_HANDLE;
 new Handle:cvar_sort            = INVALID_HANDLE;
 new Handle:cvar_flags           = INVALID_HANDLE;
 new Handle:cvar_nominate_time   = INVALID_HANDLE;
+ConVar cvar_group_limit;
 ////----/CONVARS-----/////
 
 //Mapcycle
 KeyValues map_kv = null;
 new Handle:umc_mapcycle = INVALID_HANDLE;
+ArrayList allowed_groups;
 
 //Memory queues. Used to store the previously played maps.
 Handle vote_mem_arr    = INVALID_HANDLE;
@@ -86,14 +88,14 @@ public OnPluginStart()
 
 	cvar_sort = CreateConVar(
 		"sm_umc_nominate_sorted",
-		"0",
+		"1",
 		"Determines the order of maps in the nomination menu.\n 0 - Same as mapcycle,\n 1 - Alphabetical",
 		0, true, 0.0, true, 1.0
 	);
 
 	cvar_nominate_tiered = CreateConVar(
 		"sm_umc_nominate_tiermenu",
-		"0",
+		"1",
 		"Organizes the nomination menu so that users select a group first, then a map.",
 		0, true, 0.0, true, 1.0
 	);
@@ -120,16 +122,22 @@ public OnPluginStart()
 
 	cvar_mem_map = CreateConVar(
 		"sm_umc_nominate_mapexclude",
-		"4",
+		"1",
 		"Specifies how many past maps to exclude from nominations. 1 = Current Map Only",
 		0, true, 0.0
 	);
 
 	cvar_nominate_time = CreateConVar(
 		"sm_umc_nominate_duration",
-		"20",
+		"40",
 		"Specifies how long the nomination menu should remain open for. Minimum is 10 seconds!",
 		0, true, 10.0
+	);
+
+	cvar_group_limit = CreateConVar(
+		"sm_umc_nominate_group_limit",
+		"Allmaps",
+		"If set, excludes one or multiple groups from nomination menu. Separate group names with commas (e.g. 'default,ctf'). Maximum of 8 groups."
 	);
 
 	//Create the config if it doesn't exist, and then execute it.
@@ -147,6 +155,13 @@ public OnPluginStart()
 	new numCells = ByteCountToCells(MAP_LENGTH);
 	vote_mem_arr    = CreateArray(numCells);
 	vote_catmem_arr = CreateArray(numCells);
+
+	// Set up group limits, if set
+	allowed_groups = new ArrayList(PLATFORM_MAX_PATH);
+	cvar_group_limit.AddChangeHook(ParseGroupLimits);
+	char cvar_group_limit_value[PLATFORM_MAX_PATH];
+	cvar_group_limit.GetString(cvar_group_limit_value, sizeof(cvar_group_limit_value));
+	ParseGroupLimits(cvar_group_limit, "", cvar_group_limit_value);
 
 	//Load the translations file
 	LoadTranslations("ultimate-mapchooser.phrases");
@@ -239,6 +254,43 @@ public Action:OnPlayerChat(client, const String:command[], argc)
 			if (next != -1)
 			{
 				BreakString(text[next], arg, sizeof(arg));
+
+				//*********Partial input recognition begins*********//
+				KvRewind(map_kv);
+
+				ArrayList mapArray2 = view_as<ArrayList>(UMC_CreateValidMapArray(map_kv, umc_mapcycle, INVALID_GROUP, true, false));
+
+				if (mapArray2.Length == 0)
+				{
+				LogError("No maps available to be nominated.");
+				CloseHandle(mapArray2);
+				return Plugin_Continue;
+				}
+
+				char mapSearch[MAP_LENGTH];
+				StringMap mapTrie2 = new StringMap();
+				int stricont;
+
+				for (int i = 0; i < mapArray2.Length; i++)
+				{
+					mapTrie2 = GetArrayCell(mapArray2, i);
+					GetTrieString(mapTrie2, MAP_TRIE_MAP_KEY, mapSearch, sizeof(mapSearch));
+
+					stricont = StrContains(mapSearch, arg, false);
+					if (stricont != -1)
+					{
+						arg = mapSearch;
+						break;
+					}
+
+					//PrintToServer("[Large Debug] mapSearch = %s, arg = %s, StrContains is %d", mapSearch, arg, stricont);
+
+					KvRewind(map_kv);
+				}
+
+				CloseHandle(mapArray2);
+
+				//*********Partial input recognition ends*********//
 
 				//Get the selected map.
 				decl String:groupName[MAP_LENGTH], String:nomGroup[MAP_LENGTH];
@@ -346,12 +398,13 @@ RemovePreviousMapsFromCycle()
 {
     map_kv = CreateKeyValues("umc_rotation");
     KvCopySubkeys(umc_mapcycle, map_kv);
-    FilterMapcycleFromArrays(
+    //we do not need to delete curren map from map_kv anymore
+    /*FilterMapcycleFromArrays(
         view_as<KeyValues>(map_kv),
         view_as<ArrayList>(vote_mem_arr),
         view_as<ArrayList>(vote_catmem_arr), 
         GetConVarInt(cvar_mem_group)
-    );
+    );*/
 }
 
 //************************************************************************************************//
@@ -378,6 +431,43 @@ public Action:Command_Nominate(client, args)
 			decl String:arg[MAP_LENGTH];
 			GetCmdArg(1, arg, sizeof(arg));
 			TrimString(arg);
+
+			//*********Partial input recognition begins*********//
+			KvRewind(map_kv);
+
+			ArrayList mapArray2 = view_as<ArrayList>(UMC_CreateValidMapArray(map_kv, umc_mapcycle, INVALID_GROUP, true, false));
+
+			if (mapArray2.Length == 0)
+			{
+			LogError("No maps available to be nominated.");
+			CloseHandle(mapArray2);
+			return Plugin_Continue;
+			}
+
+			char mapSearch[MAP_LENGTH];
+			StringMap mapTrie2 = new StringMap();
+			int stricont;
+
+			for (int i = 0; i < mapArray2.Length; i++)
+			{
+				mapTrie2 = GetArrayCell(mapArray2, i);
+				GetTrieString(mapTrie2, MAP_TRIE_MAP_KEY, mapSearch, sizeof(mapSearch));
+
+				stricont = StrContains(mapSearch, arg, false);
+				if (stricont != -1)
+				{
+					arg = mapSearch;
+					break;
+				}
+
+				//PrintToServer("[Large Debug] mapSearch = %s, arg = %s, StrContains is %d", mapSearch, arg, stricont);
+
+				KvRewind(map_kv);
+			}
+
+			CloseHandle(mapArray2);
+
+			//*********Partial input recognition ends*********//
 
 			//Get the selected map.
 			decl String:groupName[MAP_LENGTH], String:nomGroup[MAP_LENGTH];
@@ -509,6 +599,9 @@ Handle BuildNominationMenu(int client, const char[] cat = INVALID_GROUP)
     GetConVarString(cvar_flags, dAdminFlags, sizeof(dAdminFlags));
     int clientFlags = GetUserFlagBits(client);
     
+    //for current or prev map highlight
+    ArrayList recentlyPlayedMaps = view_as<ArrayList>(vote_mem_arr);
+
     for (int i = 0; i < mapArray.Length; i++)
     {
         style = Style_Normal;
@@ -533,6 +626,10 @@ Handle BuildNominationMenu(int client, const char[] cat = INVALID_GROUP)
         if (mAdminFlags[0] != '\0' && !(clientFlags & ReadFlagString(mAdminFlags)))
             continue;
 
+        // Skip the map if it belongs to a group we do not wish to see in the nominations list
+        if (ShouldSkipGroup(groupBuff))
+            continue;
+
         // Get the display string.
         UMC_FormatDisplayString(display, sizeof(display), dispKV, mapBuff, groupBuff);
         
@@ -541,6 +638,13 @@ Handle BuildNominationMenu(int client, const char[] cat = INVALID_GROUP)
         if (UMC_IsMapNominated(mapBuff, group)) {
             FormatEx(display, sizeof(display), "%s (Nominated)", display);
             style = Style_Disabled;
+        }
+
+        if (recentlyPlayedMaps.FindString(mapBuff) != -1) {
+            FormatEx(display, sizeof(display), "%s (Current Map)", display);
+            style = Style_Disabled;
+            //int ssas = recentlyPlayedMaps.FindString(mapBuff);
+            //PrintToServer("[Large Debug] map buff %s, findstring %d", mapBuff, ssas);
         }
 
         // TODO: what do these get used for?
@@ -617,6 +721,10 @@ Handle:BuildTieredNominationMenu()
 		GetArrayString(groupArray, i, groupName, sizeof(groupName));
 
 		KvJumpToKey(map_kv, groupName);
+
+		// Skip the group if we do not wish to see it in the first part of tiered menu
+		if (ShouldSkipGroup(groupName))
+			continue;
 
 		KvGetString(map_kv, NOMINATE_ADMINFLAG_KEY, gAdminFlags, sizeof(gAdminFlags), dAdminFlags);
 
@@ -798,4 +906,25 @@ public UMC_DisplayMapCycle(client, bool:filtered)
 	{
 		PrintKvToConsole(umc_mapcycle, client);
 	}
+}
+
+public void ParseGroupLimits(ConVar cvar, char[] oldValue, char[] newValue) {
+    allowed_groups.Clear();
+
+    if (strlen(newValue) == 0)
+        return;
+
+    char parsed_groups[8][PLATFORM_MAX_PATH];
+    ExplodeString(newValue, ",", parsed_groups, sizeof(parsed_groups), sizeof(parsed_groups[]));
+    for (int i = 0; i < sizeof(parsed_groups); i++) {
+        if (strlen(parsed_groups[i]) > 0)
+            allowed_groups.PushString(parsed_groups[i]);
+    }
+}
+
+bool ShouldSkipGroup(char[] group) {
+    if (allowed_groups.Length == 0)
+        return false;
+    
+    return allowed_groups.FindString(group) != -1;
 }
